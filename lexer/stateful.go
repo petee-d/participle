@@ -305,7 +305,7 @@ next:
 			if len(sample) > 16 {
 				sample = append(sample[:16], []rune("...")...)
 			}
-			return Token{}, errorf(l.pos, "invalid input text %q", string(sample))
+			return Token{}, Errorf(l.pos, "invalid input text %q", string(sample))
 		}
 
 		if rule.Action != nil {
@@ -314,10 +314,10 @@ next:
 				groups = append(groups, l.data[match[i]:match[i+1]])
 			}
 			if err := rule.Action.applyAction(l, groups); err != nil {
-				return Token{}, errorf(l.pos, "rule %q: %s", rule.Name, err)
+				return Token{}, Errorf(l.pos, "rule %q: %s", rule.Name, err)
 			}
 		} else if match[0] == match[1] {
-			return Token{}, errorf(l.pos, "rule %q did not match any input", rule.Name)
+			return Token{}, Errorf(l.pos, "rule %q did not match any input", rule.Name)
 		}
 
 		span := l.data[match[0]:match[1]]

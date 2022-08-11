@@ -52,7 +52,7 @@ func buildEBNF(root bool, n node, seen map[node]bool, p *ebnfp, outp *[]*ebnfp) 
 		}
 
 	case *strct:
-		name := strings.ToUpper(n.typ.Name()[:1]) + n.typ.Name()[1:]
+		name := n.normalizedName()
 		if p != nil {
 			p.out += name
 		}

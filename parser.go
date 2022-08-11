@@ -138,13 +138,7 @@ func (p *Parser) ParseFromLexer(lex *lexer.PeekingLexer, v interface{}, options 
 	if rt.Kind() != reflect.Ptr || rt.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("target must be a pointer to a struct, not %s", rt)
 	}
-	caseInsensitive := map[lexer.TokenType]bool{}
-	for sym, tt := range p.lex.Symbols() {
-		if p.caseInsensitive[sym] {
-			caseInsensitive[tt] = true
-		}
-	}
-	ctx := newParseContext(lex, p.useLookahead, caseInsensitive)
+	ctx := newParseContext(lex, p.useLookahead, p.findCaseInsensitiveTokens())
 	defer func() { *lex = *ctx.PeekingLexer }()
 	for _, option := range options {
 		option(ctx)
@@ -157,6 +151,16 @@ func (p *Parser) ParseFromLexer(lex *lexer.PeekingLexer, v interface{}, options 
 		return p.parseStreaming(ctx, stream)
 	}
 	return p.parseOne(ctx, rv)
+}
+
+func (p *Parser) findCaseInsensitiveTokens() map[lexer.TokenType]bool {
+	caseInsensitive := map[lexer.TokenType]bool{}
+	for sym, tt := range p.lex.Symbols() {
+		if p.caseInsensitive[sym] {
+			caseInsensitive[tt] = true
+		}
+	}
+	return caseInsensitive
 }
 
 func (p *Parser) parse(lex lexer.Lexer, v interface{}, options ...ParseOption) (err error) {

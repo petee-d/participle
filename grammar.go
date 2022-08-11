@@ -10,14 +10,14 @@ import (
 
 type generatorContext struct {
 	lexer.Definition
-	typeNodes    map[reflect.Type]node
+	typeNodes    map[reflect.Type]*strct
 	symbolsToIDs map[lexer.TokenType]string
 }
 
 func newGeneratorContext(lex lexer.Definition) *generatorContext {
 	return &generatorContext{
 		Definition:   lex,
-		typeNodes:    map[reflect.Type]node{},
+		typeNodes:    map[reflect.Type]*strct{},
 		symbolsToIDs: lexer.SymbolsByRune(lex),
 	}
 }
@@ -26,6 +26,7 @@ func newGeneratorContext(lex lexer.Definition) *generatorContext {
 func (g *generatorContext) parseType(t reflect.Type) (_ node, returnedError error) {
 	t = indirectType(t)
 	if n, ok := g.typeNodes[t]; ok {
+		n.usages++
 		return n, nil
 	}
 	if t.Implements(parseableType) {
@@ -278,7 +279,7 @@ func (g *generatorContext) parseGroup(slexer *structLexer) (node, error) {
 		return nil, err
 	}
 	if peek.Type == '?' {
-		return g.subparseLookaheadGroup(slexer) // If there was an error peeking, code below will handle it
+		return g.subparseLookaheadGroup(slexer) // If there was an error peeking, statement below will handle it
 	}
 	expr, err := g.subparseGroup(slexer)
 	if err != nil {

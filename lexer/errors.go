@@ -21,8 +21,8 @@ type lexerError struct {
 
 var _ errorInterface = &lexerError{}
 
-// Creates a new Error at the given position.
-func errorf(pos Position, format string, args ...interface{}) *lexerError {
+// Errorf creates a new lexerError at the given position.
+func Errorf(pos Position, format string, args ...interface{}) *lexerError {
 	return &lexerError{Msg: fmt.Sprintf(format, args...), Pos: pos}
 }
 
