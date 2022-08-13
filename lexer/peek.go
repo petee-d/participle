@@ -29,16 +29,31 @@ func Upgrade(lex Lexer, elide ...TokenType) (*PeekingLexer, error) {
 	for _, rn := range elide {
 		r.elide[rn] = true
 	}
-	for {
-		t, err := lex.Next()
-		if err != nil {
-			return r, err
+	if batchLex, ok := lex.(BatchLexer); ok {
+		for {
+			batch, err := batchLex.NextBatch()
+			if err != nil {
+				return r, err
+			}
+			r.tokens = append(r.tokens, batch...)
+			last := batch[len(batch)-1]
+			if last.EOF() {
+				break
+			}
 		}
-		r.tokens = append(r.tokens, t)
-		if t.EOF() {
-			break
+	} else {
+		for {
+			t, err := lex.Next()
+			if err != nil {
+				return r, err
+			}
+			r.tokens = append(r.tokens, t)
+			if t.EOF() {
+				break
+			}
 		}
 	}
+
 	r.advanceToNonElided()
 	return r, nil
 }

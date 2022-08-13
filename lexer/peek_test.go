@@ -21,7 +21,21 @@ func (s *staticLexer) Next() (lexer.Token, error) {
 	return t, nil
 }
 
-func TestUpgrade(t *testing.T) {
+type batchLexer struct {
+	batches [][]lexer.Token
+}
+
+func (b *batchLexer) Next() (lexer.Token, error) {
+	panic("shouldn't be called")
+}
+
+func (b *batchLexer) NextBatch() ([]lexer.Token, error) {
+	ret := b.batches[0] // Should never be called after EOF is returned at the end of a batch
+	b.batches = b.batches[1:]
+	return ret, nil
+}
+
+func TestUpgrade_Lexer(t *testing.T) {
 	t0 := lexer.Token{Type: 1, Value: "moo"}
 	ts := lexer.Token{Type: 3, Value: " "}
 	t1 := lexer.Token{Type: 2, Value: "blah"}
@@ -31,6 +45,22 @@ func TestUpgrade(t *testing.T) {
 	require.Equal(t, t0, *l.Peek())
 	require.Equal(t, t0, *l.Peek())
 	require.Equal(t, tokens, l.Range(0, 3))
+}
+
+func TestUpgrade_BatchLexer(t *testing.T) {
+	batches := [][]lexer.Token{
+		{{Type: 1, Value: "x"}, {Type: 3, Value: " "}},
+		{{Type: 1, Value: "y"}},
+		{{Type: 3, Value: " "}, {Type: 2, Value: "z"}, lexer.EOFToken(lexer.Position{})},
+	}
+	l, err := lexer.Upgrade(&batchLexer{batches: batches}, 3)
+	require.NoError(t, err)
+	require.Equal(t, 1, l.Peek().Type)
+	require.Equal(t, "x", l.Next().Value)
+	require.Equal(t, "y", l.Next().Value)
+	require.Equal(t, "z", l.Next().Value)
+	require.Equal(t, lexer.EOF, l.Next().Type)
+	require.Equal(t, lexer.EOF, l.Peek().Type)
 }
 
 func TestPeekingLexer_Peek_Next_Checkpoint(t *testing.T) {
