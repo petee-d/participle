@@ -61,6 +61,9 @@ func (g *generatorContext) addCustomDefs(defs []customDef) error {
 func (g *generatorContext) parseType(t reflect.Type) (_ node, returnedError error) {
 	t = indirectType(t)
 	if n, ok := g.typeNodes[t]; ok {
+		if s, ok := n.(*strct); ok {
+			s.usages++
+		}
 		return n, nil
 	}
 	if t.Implements(parseableType) {
@@ -313,7 +316,7 @@ func (g *generatorContext) parseGroup(slexer *structLexer) (node, error) {
 		return nil, err
 	}
 	if peek.Type == '?' {
-		return g.subparseLookaheadGroup(slexer) // If there was an error peeking, code below will handle it
+		return g.subparseLookaheadGroup(slexer) // If there was an error peeking, statement below will handle it
 	}
 	expr, err := g.subparseGroup(slexer)
 	if err != nil {

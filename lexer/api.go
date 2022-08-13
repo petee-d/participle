@@ -47,6 +47,11 @@ type Lexer interface {
 	Next() (Token, error)
 }
 
+// BatchLexer consumes and returns a batch of tokens at a time
+type BatchLexer interface {
+	NextBatch() ([]Token, error)
+}
+
 // SymbolsByRune returns a map of lexer symbol names keyed by rune.
 func SymbolsByRune(def Definition) map[TokenType]string {
 	symbols := def.Symbols()

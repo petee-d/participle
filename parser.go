@@ -162,13 +162,7 @@ func (p *Parser[G]) ParseFromLexer(lex *lexer.PeekingLexer, options ...ParseOpti
 	if err != nil {
 		return nil, err
 	}
-	caseInsensitive := map[lexer.TokenType]bool{}
-	for sym, tt := range p.lex.Symbols() {
-		if p.caseInsensitive[sym] {
-			caseInsensitive[tt] = true
-		}
-	}
-	ctx := newParseContext(lex, p.useLookahead, caseInsensitive)
+	ctx := newParseContext(lex, p.useLookahead, p.findCaseInsensitiveTokens())
 	defer func() { *lex = *ctx.PeekingLexer }()
 	for _, option := range options {
 		option(ctx)
@@ -294,6 +288,16 @@ func (p *Parser[G]) getElidedTypes() []lexer.TokenType {
 		elideTypes = append(elideTypes, rn)
 	}
 	return elideTypes
+}
+
+func (p *Parser[G]) findCaseInsensitiveTokens() map[lexer.TokenType]bool {
+	caseInsensitive := map[lexer.TokenType]bool{}
+	for sym, tt := range p.lex.Symbols() {
+		if p.caseInsensitive[sym] {
+			caseInsensitive[tt] = true
+		}
+	}
+	return caseInsensitive
 }
 
 func (p *Parser[G]) parseNodeFor(v reflect.Value) (node, error) {

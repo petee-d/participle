@@ -43,6 +43,7 @@ func FormatError(err Error) string {
 type UnexpectedTokenError struct {
 	Unexpected lexer.Token
 	at         node
+	Expect     string // Public alternative to the `at` field for noting what is expected
 }
 
 func (u *UnexpectedTokenError) Error() string { return FormatError(u) }
@@ -51,6 +52,8 @@ func (u *UnexpectedTokenError) Message() string { // nolint: golint
 	var expected string
 	if u.at != nil {
 		expected = fmt.Sprintf(" (expected %s)", u.at)
+	} else if u.Expect != "" {
+		expected = fmt.Sprintf(" (expected %s)", u.Expect)
 	}
 	return fmt.Sprintf("unexpected token %q%s", u.Unexpected, expected)
 }
@@ -69,9 +72,14 @@ func (p *ParseError) Error() string            { return FormatError(p) }
 func (p *ParseError) Message() string          { return p.Msg }
 func (p *ParseError) Position() lexer.Position { return p.Pos }
 
-// Errorf creates a new Error at the given position.
+// Errorf creates a new Error at the given position with a format message string
 func Errorf(pos lexer.Position, format string, args ...interface{}) Error {
 	return &ParseError{Msg: fmt.Sprintf(format, args...), Pos: pos}
+}
+
+// NewError creates a new Error at the given position with a raw message
+func NewError(pos lexer.Position, message string) Error {
+	return &ParseError{Msg: message, Pos: pos}
 }
 
 type wrappingParseError struct {
