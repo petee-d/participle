@@ -189,6 +189,10 @@ func (s *strct) maybeInjectTokens(tokens []lexer.Token, v reflect.Value) {
 	v.FieldByIndex(s.tokensFieldIndex).Set(reflect.ValueOf(tokens))
 }
 
+func (s *strct) normalizedName() string {
+	return strings.ToUpper(s.typ.Name()[:1]) + s.typ.Name()[1:]
+}
+
 type groupMatchMode int
 
 func (g groupMatchMode) String() string {
