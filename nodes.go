@@ -34,6 +34,9 @@ type node interface {
 	// Returned slice will be nil if the node does not match.
 	Parse(ctx *parseContext, parent reflect.Value) ([]reflect.Value, error)
 
+	// Generate Go code for parsing this node
+	Generate(state generatorState, gen *codeGenerator)
+
 	// Return a decent string representation of the Node.
 	fmt.Stringer
 
@@ -73,10 +76,28 @@ func (p *parseable) Parse(ctx *parseContext, parent reflect.Value) (out []reflec
 	return []reflect.Value{rv.Elem()}, nil
 }
 
+func (p *parseable) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// parseable ` + p.GoString())
+	variable := generatedVariable{
+		name: "v" + p.t.Name(), // TODO: Normalized name
+		typ:  p.t,
+	}
+	gen.statement(fmt.Sprintf(`var %s %s%s`, variable.name, gen.packagePrefix, variable.typ.Name()))
+	gen.statement(fmt.Sprintf(`if err := %s.Parse(c.Lex); err == participle.NextMatch {`, variable.name))
+	gen.gotoLabelIndent(state.errorLabel, 1)
+	gen.statement(`} else if err != nil {`)
+	gen.statementIndent(`c.SetCustomError("", err)`)
+	gen.gotoLabelIndent(state.errorLabel, 1)
+	gen.statement(`}`)
+	gen.captureStruct(state, variable, 1)
+	gen.statement(``)
+}
+
 // @@ (but for a custom production)
 type custom struct {
-	typ     reflect.Type
-	parseFn reflect.Value
+	typ      reflect.Type
+	parseFn  reflect.Value
+	defIndex int
 }
 
 func (c *custom) String() string   { return ebnf(c) }
@@ -94,6 +115,21 @@ func (c *custom) Parse(ctx *parseContext, parent reflect.Value) (out []reflect.V
 	return []reflect.Value{results[0]}, nil
 }
 
+func (c *custom) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// custom ` + c.GoString())
+	gen.statement(fmt.Sprintf(`if customResult, customSuccess := c.InvokeCustom(%d); customSuccess {`, c.defIndex))
+	gen.indent++
+	variable := generatedVariable{name: "v" + c.typ.Name(), typ: c.typ} // TODO: normalized name
+	// TODO: what if different package?
+	gen.statement(fmt.Sprintf("%s := customResult.(%s)", variable.name, state.capture.field.Type.Name()))
+	gen.captureStruct(state, variable, 1)
+	gen.indent--
+	gen.statement(`} else {`)
+	gen.gotoLabelIndent(state.errorLabel, 1)
+	gen.statement(`}`)
+	gen.statement(``)
+}
+
 // @@ (for a union)
 type union struct {
 	unionDef
@@ -107,12 +143,17 @@ func (u *union) Parse(ctx *parseContext, parent reflect.Value) (out []reflect.Va
 	defer ctx.printTrace(u)()
 	vals, err := u.disjunction.Parse(ctx, parent)
 	if err != nil {
-		return nil, err
+		return nil, err // TODO: Shouldn't this try to return the partial tree?
 	}
 	for i := range vals {
 		vals[i] = maybeRef(u.members[i], vals[i]).Convert(u.typ)
 	}
 	return vals, nil
+}
+
+func (u *union) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// union ` + u.GoString())
+	u.disjunction.Generate(state, gen)
 }
 
 // @@
@@ -168,6 +209,59 @@ func (s *strct) Parse(ctx *parseContext, parent reflect.Value) (out []reflect.Va
 	return []reflect.Value{sv}, ctx.Apply()
 }
 
+func (s *strct) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// strct ` + s.GoString())
+	normalizedName := s.normalizedName()
+	variable := generatedVariable{
+		name: "v" + normalizedName,
+		typ:  s.typ,
+	}
+
+	gen.statement(`{`)
+	gen.indent++
+	gen.statement(fmt.Sprintf(`var %s %s%s`, variable.name, gen.packagePrefix, variable.typ.Name()))
+	if s.usages > 1 {
+		// Used multiple times, cannot be inlined, schedule generating a function and call it here
+		gen.queueGeneratingStruct(s)
+		gen.statement(fmt.Sprintf(`c.parse%s(&%s)`, normalizedName, variable.name))
+		gen.statement(`if c.HasErr() {`)
+		if state.failUnexpectedWith != "" {
+			gen.statementIndent(fmt.Sprintf(`c.AddTokenErrorExpected(%q)`, state.failUnexpectedWith))
+		}
+		gen.gotoLabelIndent(state.errorLabel, 1)
+		gen.statement(`}`)
+	} else {
+		// Used only once, inline the body to avoid call overhead
+		childState := state
+		childState.target = variable
+		childState.captureSink = nil
+		childState.capture = nil
+		s.generateBody(childState, gen)
+	}
+	gen.captureStruct(state, variable, s.usages)
+	gen.indent--
+	gen.statement(`}`)
+	gen.statement(``)
+}
+
+func (s *strct) generateBody(state generatorState, gen *codeGenerator) {
+	state.structErrorLabel = state.errorLabel
+	if s.tokensFieldIndex != nil {
+		gen.statement(`rawStart := c.Lex.RawCursor()`)
+	}
+	if s.posFieldIndex != nil {
+		gen.statement(gen.getFieldRef(state.target, s.posFieldIndex) + ` = c.Lex.Peek().Pos`)
+	}
+	gen.statement(``)
+	s.expr.Generate(state, gen)
+	if s.endPosFieldIndex != nil {
+		gen.statement(gen.getFieldRef(state.target, s.endPosFieldIndex) + ` = c.Lex.Peek().Pos`)
+	}
+	if s.tokensFieldIndex != nil {
+		gen.statement(gen.getFieldRef(state.target, s.tokensFieldIndex) + ` = c.Lex.Range(rawStart, c.Lex.RawCursor())`)
+	}
+}
+
 func (s *strct) maybeInjectStartToken(token *lexer.Token, v reflect.Value) {
 	if s.posFieldIndex == nil {
 		return
@@ -190,6 +284,7 @@ func (s *strct) maybeInjectTokens(tokens []lexer.Token, v reflect.Value) {
 }
 
 func (s *strct) normalizedName() string {
+	// TODO: Also union?
 	return strings.ToUpper(s.typ.Name()[:1]) + s.typ.Name()[1:]
 }
 
@@ -233,6 +328,7 @@ type group struct {
 
 func (g *group) String() string   { return ebnf(g) }
 func (g *group) GoString() string { return fmt.Sprintf("group{%s}", g.mode) }
+
 func (g *group) Parse(ctx *parseContext, parent reflect.Value) (out []reflect.Value, err error) {
 	defer ctx.printTrace(g)()
 	// Configure min/max matches.
@@ -294,6 +390,87 @@ func (g *group) Parse(ctx *parseContext, parent reflect.Value) (out []reflect.Va
 	return out, nil
 }
 
+func (g *group) Generate(state generatorState, gen *codeGenerator) {
+	if g.mode == groupMatchOnce {
+		g.expr.Generate(state, gen)
+		return
+	}
+
+	gen.statement(`// group ` + g.String())
+	if g.mode == groupMatchNonEmpty {
+		g.generateNonEmpty(state, gen)
+		return
+	}
+
+	childState := state
+	childState.failUnexpectedWith = ""
+	childState.errorLabel = gen.newLabel("group", "Error")
+	switch g.mode {
+	case groupMatchZeroOrOne:
+		gen.statement(`for {`)
+	case groupMatchZeroOrMore, groupMatchOneOrMore:
+		gen.statement(`for matches := 0; ; {`)
+	default:
+		panic(fmt.Errorf("unknown group mode: %s", g.String()))
+	}
+	gen.indent++
+	gen.statement(`branchCheckpoint := c.Lex.MakeCheckpoint()`)
+	if state.capture != nil && !state.capture.direct {
+		gen.statement(state.capture.sourceRef() + `Checkpoint := ` + state.capture.sourceRef())
+	}
+	acceptSink := childState.ensureCaptureSink(gen, g.expr) // Only if the above is false?
+	gen.statement(``)
+	g.expr.Generate(childState, gen)
+	switch g.mode {
+	case groupMatchZeroOrOne:
+		acceptSink()
+		gen.statement(`break`)
+	case groupMatchZeroOrMore, groupMatchOneOrMore:
+		gen.statement(`matches += 1`)
+		gen.statement(`if matches >= participle.MaxIterations {`)
+		gen.statementIndent(fmt.Sprintf(`c.SetParseError(%q)`,
+			fmt.Sprintf("too many iterations of %s (> %d)", g, MaxIterations)))
+		gen.gotoLabelIndent(state.errorLabel, 1)
+		gen.statement(`}`)
+		acceptSink()
+		gen.statement(`continue`)
+	}
+	gen.writeLabel(childState.errorLabel)
+	gen.statement(`if c.AboveLookahead(branchCheckpoint) {`)
+	gen.gotoLabelIndent(state.errorLabel, 1)
+	gen.statement(`}`)
+	gen.statement(`c.Lex.LoadCheckpoint(branchCheckpoint)`)
+	if state.capture != nil && !state.capture.direct {
+		gen.statement(state.capture.sourceRef() + ` = ` + state.capture.sourceRef() + `Checkpoint`)
+	}
+	gen.statement(`c.SuppressError()`)
+	if g.mode == groupMatchOneOrMore {
+		gen.statement(`if matches == 0 {`)
+		gen.statement("\t" + fmt.Sprintf(`c.SetParseError(%q)`,
+			fmt.Sprintf("sub-expression %s must match at least once", g)))
+		gen.gotoLabelIndent(state.errorLabel, 1)
+		gen.statement(`}`)
+	}
+	gen.statement(`break`)
+	gen.indent--
+	gen.statement(`}`)
+	gen.statement(``)
+}
+
+func (g *group) generateNonEmpty(state generatorState, gen *codeGenerator) {
+	gen.statement(`{`)
+	gen.indent++
+	gen.statement(`nonEmptyCheckpoint := c.Lex.MakeCheckpoint()`)
+	g.expr.Generate(state, gen)
+	gen.statement(`if c.Lex.Cursor() == nonEmptyCheckpoint.Cursor() {`)
+	gen.statementIndent(fmt.Sprintf(`c.SetParseError(%q)`, fmt.Sprintf("sub-expression %s cannot be empty", g))) // TODO lookahead?
+	gen.gotoLabelIndent(state.errorLabel, 1)
+	gen.statement(`}`)
+	gen.indent--
+	gen.statement(`}`)
+	return
+}
+
 // (?= <expr> ) for positive lookahead, (?! <expr> ) for negative lookahead; neither consumes input
 type lookaheadGroup struct {
 	expr     node
@@ -314,6 +491,36 @@ func (l *lookaheadGroup) Parse(ctx *parseContext, parent reflect.Value) (out []r
 		return nil, &UnexpectedTokenError{Unexpected: *ctx.Peek()}
 	}
 	return []reflect.Value{}, nil // Empty match slice means a match, unlike nil
+}
+
+func (l *lookaheadGroup) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// lookaheadGroup ` + l.String())
+	childState := state
+	var errorLabel = gen.newLabel("lookahead", "Error")
+	gen.statement(`{`)
+	gen.indent++
+	gen.statement(`branchCheckpoint := c.Lex.MakeCheckpoint()`)
+	gen.statement(``)
+	if l.negative {
+		// Negative lookahead - expect and silence errors in the branch, raise if there is none
+		childState.failUnexpectedWith = ""
+		childState.errorLabel = errorLabel
+	}
+	l.expr.Generate(childState, gen)
+	gen.statement(`c.Lex.LoadCheckpoint(branchCheckpoint)`)
+	if l.negative {
+		// Negative lookahead - if here, there was no error, so this should not match
+		gen.statement(`c.SetTokenError("")`)
+		gen.gotoLabelIndent(state.errorLabel, 0)
+
+		// Catch errors and convert them to a success
+		gen.writeLabel(childState.errorLabel)
+		gen.statement(`c.Lex.LoadCheckpoint(branchCheckpoint)`) // Needed here as execution skipped the above code
+		gen.statement(`c.SuppressError()`)
+	}
+	gen.indent--
+	gen.statement(`}`)
+	gen.statement(``)
 }
 
 // <expr> {"|" <expr>}
@@ -362,6 +569,66 @@ func (d *disjunction) Parse(ctx *parseContext, parent reflect.Value) (out []refl
 	return nil, nil
 }
 
+func (d *disjunction) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// disjunction ` + d.String())
+	if d.generateLiteralSwitch(state, gen) {
+		return
+	}
+
+	successLabel := gen.newLabel("disjunction", "Success")
+	afterBranch := make([]*jumpLabel, len(d.nodes)) // Makes labels have a consistent line number
+	for i := range d.nodes {
+		afterBranch[i] = gen.newLabel("disjunction", fmt.Sprintf("Alt%dError", i))
+	}
+
+	gen.statement(`{`)
+	gen.indent++
+	gen.statement(`branchCheckpoint := c.Lex.MakeCheckpoint()`)
+	//gen.statement(`var _ = ` + state.target.rValuePrefix + state.target.name) // TODO: Could this be necessary?
+
+	for i, alt := range d.nodes {
+		childState := state
+		childState.failUnexpectedWith = ""
+		childState.errorLabel = afterBranch[i]
+		gen.statement(``)
+		alt.Generate(childState, gen)
+		// TODO: check for the panic as in Parse?
+		gen.gotoLabelIndent(successLabel, 0)
+		gen.writeLabel(childState.errorLabel)
+		gen.statement(`if c.AboveLookahead(branchCheckpoint) {`)
+		gen.gotoLabelIndent(state.errorLabel, 1)
+		gen.statement(`}`)
+		gen.statement(`c.Lex.LoadCheckpoint(branchCheckpoint)`)
+	}
+	gen.gotoLabelIndent(state.errorLabel, 0)
+	gen.indent--
+	gen.statement(`}`)
+	gen.writeLabel(successLabel)
+	gen.statement(`c.SuppressError()`)
+	gen.statement(``)
+}
+
+func (d *disjunction) generateLiteralSwitch(state generatorState, gen *codeGenerator) bool {
+	literals := make([]string, 0, len(d.nodes))
+	for _, n := range d.nodes {
+		if lit, ok := n.(*literal); ok && lit.t == -1 {
+			literals = append(literals, strconv.Quote(lit.s))
+		} else {
+			return false
+		}
+	}
+	gen.statement(`switch c.Lex.Peek().Value {`)
+	gen.statement(`case ` + strings.Join(literals, ", ") + `:`)
+	gen.indent++
+	gen.processToken(state)
+	gen.indent--
+	gen.statement(`default:`)
+	gen.handleMismatchIndent(state, 1)
+	gen.statement(`}`)
+	gen.statement(``)
+	return true
+}
+
 // <node> ...
 type sequence struct {
 	head bool // True if this is the head node.
@@ -398,6 +665,16 @@ func (s *sequence) Parse(ctx *parseContext, parent reflect.Value) (out []reflect
 	return out, nil
 }
 
+func (s *sequence) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// sequence ` + s.String())
+	for n := s; n != nil; n = n.next {
+		if n != s {
+			state.failUnexpectedWith = n.String()
+		}
+		n.node.Generate(state, gen)
+	}
+}
+
 // @<expr>
 type capture struct {
 	field structLexerField
@@ -423,6 +700,36 @@ func (c *capture) Parse(ctx *parseContext, parent reflect.Value) (out []reflect.
 	return []reflect.Value{parent}, nil
 }
 
+func (c *capture) Generate(state generatorState, gen *codeGenerator) {
+	directCapture := false
+	switch c.node.(type) {
+	case *strct, *union, *custom, *reference, *literal:
+		directCapture = true // Structs & unions require direct capture, single-token nodes use it as an optimization
+	}
+	state.capture = &generatedCapture{
+		field:  c.field.StructField,
+		direct: directCapture || gen.shouldUseDirectCaptureForType(c.field.Type),
+	}
+	if state.captureSink != nil {
+		state.captureSink.captureField(c.field.Name)
+		state.target.name = state.captureSink.variable
+	}
+
+	gen.statement(`// capture ` + c.field.Name + ` from ` + c.String())
+	if state.capture.direct {
+		c.node.Generate(state, gen)
+		return
+	}
+	gen.statement(`{`)
+	gen.indent++
+	gen.statement(`var ` + state.capture.sourceRef() + ` string`)
+	c.node.Generate(state, gen)
+	gen.captureTokens(state)
+	gen.indent--
+	gen.statement(`}`)
+	gen.statement(``)
+}
+
 // <identifier> - named lexer token reference
 type reference struct {
 	typ        lexer.TokenType
@@ -442,6 +749,15 @@ func (r *reference) Parse(ctx *parseContext, parent reflect.Value) (out []reflec
 	}
 	ctx.FastForward(cursor)
 	return []reflect.Value{reflect.ValueOf(token.Value)}, nil
+}
+
+func (r *reference) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// reference ` + r.String())
+	gen.statement(fmt.Sprintf(`if c.Lex.Peek().Type != %d {`, r.typ))
+	gen.handleMismatchIndent(state, 1)
+	gen.statement(`}`)
+	gen.processToken(state)
+	gen.statement(``)
 }
 
 // Match a token literal exactly "..."[:<type>].
@@ -473,6 +789,20 @@ func (l *literal) Parse(ctx *parseContext, parent reflect.Value) (out []reflect.
 	return nil, nil
 }
 
+func (l *literal) Generate(state generatorState, gen *codeGenerator) {
+	// TODO case insensitive
+	gen.statement(`// literal ` + l.String())
+	typeMatch := ""
+	if l.t != -1 {
+		typeMatch = fmt.Sprintf(` && c.Lex.Peek().Type == %d`, l.t)
+	}
+	gen.statement(fmt.Sprintf(`if c.Lex.Peek().Value != %s%s {`, strconv.Quote(l.s), typeMatch))
+	gen.handleMismatchIndent(state, 1)
+	gen.statement("}")
+	gen.processToken(state)
+	gen.statement(``)
+}
+
 type negation struct {
 	node node
 }
@@ -500,6 +830,40 @@ func (n *negation) Parse(ctx *parseContext, parent reflect.Value) (out []reflect
 	// Just give the next token
 	next := ctx.Next()
 	return []reflect.Value{reflect.ValueOf(next.Value)}, nil
+}
+
+func (n *negation) Generate(state generatorState, gen *codeGenerator) {
+	gen.statement(`// negation ` + n.String())
+	childState := state
+	childState.errorLabel = gen.newLabel("negation", "Error")
+
+	gen.statement(`if c.Lex.Peek().EOF() {`)
+	gen.gotoLabelIndent(state.errorLabel, 1)
+	gen.statement(`}`)
+
+	gen.statement(`{`)
+	gen.indent++
+
+	// The negation internal node shouldn't capture anything, we're capturing a token only if it fails
+	childState.capture = nil
+	childState.captureSink = nil
+	gen.statement(`branchCheckpoint := c.Lex.MakeCheckpoint()`)
+	n.node.Generate(childState, gen)
+
+	// Matched if here, unwanted
+	gen.statement(`c.Lex.LoadCheckpoint(branchCheckpoint)`)
+	gen.statement(`c.ResetError()`) // The error on the first token should override any deeper error
+	gen.handleMismatchIndent(state, 0)
+	gen.writeLabel(childState.errorLabel)
+
+	// Had an error if here, wanted
+	gen.statement(`c.Lex.LoadCheckpoint(branchCheckpoint)`)
+	gen.statement(`c.ResetError()`) // Error within the negation was wanted and should never be reported
+	gen.processToken(state)
+
+	gen.indent--
+	gen.statement(`}`)
+	gen.statement(``)
 }
 
 // Attempt to transform values to given type.

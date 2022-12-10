@@ -22,6 +22,7 @@
 	- [Example simple/non-stateful lexer](#example-simplenon-stateful-lexer)
 	- [Experimental - code generation](#experimental---code-generation)
 - [Options](#options)
+	- [Experimental - parser code generation](#experimental---parser-code-generation)
 - [Examples](#examples)
 - [Performance](#performance)
 - [Concurrency](#concurrency)
@@ -443,6 +444,45 @@ lexer.
 ## Options
 
 The Parser's behaviour can be configured via [Options](https://pkg.go.dev/github.com/alecthomas/participle/v2#Option).
+
+### Experimental - parser code generation
+
+Generating parser code can improve the performance of parsing
+(not lexing, which has its [own code generation support](#experimental---code-generation))
+significantly, usually at least 10x, possibly even 30x. This is thanks to the generated code not having to rely on
+reflection (with a few exceptions), avoiding allocations as much as possible and heavily inlining code.
+
+Follow these steps to generate parser code and use it:
+1. Create a new (ideally private) type in the package containing the parser, embedding `participle.GeneratedParserBase`.
+	```go
+	type generatedParser struct {
+		participle.GeneratedParserBase
+	}
+	```
+2. Add the `participle.UseGeneratedParser` option to the `participle.MustBuild`/`participle.Build` call used to
+   create your parser, supplying the type you just created as a type argument.
+	```go
+	parser = participle.MustBuild[MyGrammar](
+		...
+		participle.UseGeneratedParser[generatedParser](),
+	)
+	```
+3. Create an executable (could even be a test) that calls `participle.MustGenerateParserFile` to generate the methods
+   to the type you just created. Supply this type as the only type argument to this generic function.
+   As normal arguments, supply the built parser instance and the relative path and mode to use for the generated file.
+	```go
+	participle.MustGenerateParserFile[generatedParser](parser, "parser_gen.go", 0664)
+	```
+   * If more control over persisting the generated code is desired, you can also use the underlying `participle.GenerateParserCode`.
+4. Compile & run this executable to generate the code, adding methods to the `generatedParser` type. The generated code
+   will now automatically be used in any `.Parse*` methods.
+5. After any changes to the lexer, parser grammar or the other `Build` options, code must be re-generated.
+   Delete the generated file, then re-compile and re-run the executable.
+   * Note: Deleting the generated code isn't required to re-generate it, but changes to the grammar may make the old
+     code invalid and prevent you from compiling the executable to re-generate parser code. Deleting the file fixes that.
+6. If you wish to disable usage of the generated code for any reason, you can not only do so by removing the
+   `participle.MustGenerateParserFile` when building the parser, but also by supplying
+   the `participle.SkipGeneratedParser()` option to the `.Parse*` methods. This can be useful for comparative benchmarks.
 
 ## Examples
 

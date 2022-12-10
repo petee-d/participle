@@ -110,6 +110,14 @@ func Union[T any](members ...T) Option {
 	}
 }
 
+func UseGeneratedParser[PG GeneratedParser]() Option {
+	return func(p *parserOptions) error {
+		var gen PG
+		p.typeGenParsers = gen.GeneratedParsers()
+		return nil
+	}
+}
+
 // ParseOption modifies how an individual parse is applied.
 type ParseOption func(p *parseContext)
 
@@ -126,5 +134,11 @@ func Trace(w io.Writer) ParseOption {
 func AllowTrailing(ok bool) ParseOption {
 	return func(p *parseContext) {
 		p.allowTrailing = ok
+	}
+}
+
+func SkipGeneratedParser() ParseOption {
+	return func(p *parseContext) {
+		p.skipGenParser = true
 	}
 }

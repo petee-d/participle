@@ -48,11 +48,11 @@ func (g *generatorContext) addUnionDefs(defs []unionDef) error {
 }
 
 func (g *generatorContext) addCustomDefs(defs []customDef) error {
-	for _, def := range defs {
+	for index, def := range defs {
 		if _, exists := g.typeNodes[def.typ]; exists {
 			return fmt.Errorf("duplicate definition for interface or union type %s", def.typ)
 		}
-		g.typeNodes[def.typ] = &custom{typ: def.typ, parseFn: def.parseFn}
+		g.typeNodes[def.typ] = &custom{typ: def.typ, parseFn: def.parseFn, defIndex: index}
 	}
 	return nil
 }

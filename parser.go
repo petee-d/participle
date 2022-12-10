@@ -24,6 +24,7 @@ type parserOptions struct {
 	lex                   lexer.Definition
 	rootType              reflect.Type
 	typeNodes             map[reflect.Type]node
+	typeGenParsers        GeneratedParserFns
 	useLookahead          int
 	caseInsensitive       map[string]bool
 	caseInsensitiveTokens map[lexer.TokenType]bool
@@ -160,10 +161,6 @@ func (p *Parser[G]) Lex(filename string, r io.Reader) ([]lexer.Token, error) {
 func (p *Parser[G]) ParseFromLexer(lex *lexer.PeekingLexer, options ...ParseOption) (*G, error) {
 	v := new(G)
 	rv := reflect.ValueOf(v)
-	parseNode, err := p.parseNodeFor(rv)
-	if err != nil {
-		return nil, err
-	}
 	ctx := newParseContext(lex, p.useLookahead, p.caseInsensitiveTokens)
 	defer func() { *lex = ctx.PeekingLexer }()
 	for _, option := range options {
@@ -172,6 +169,20 @@ func (p *Parser[G]) ParseFromLexer(lex *lexer.PeekingLexer, options ...ParseOpti
 	// If the grammar implements Parseable, use it.
 	if parseable, ok := any(v).(Parseable); ok {
 		return v, p.rootParseable(&ctx, parseable)
+	}
+	// If there is a generated parser, use it.
+	if !ctx.skipGenParser && p.typeGenParsers != nil {
+		if genParser := p.typeGenParsers[rv.Type()]; genParser != nil {
+			err := genParser(NewGeneratedParserContext(p, &ctx.PeekingLexer, ctx.allowTrailing), v)
+			return v, err
+		} else {
+			return nil, fmt.Errorf("no generated parser for type %v, please regenerate parser code", rv.Type().Elem()) // TODO info how
+		}
+	}
+	// Finally, use the native reflective parser
+	parseNode, err := p.parseNodeFor(rv)
+	if err != nil {
+		return nil, err
 	}
 	return v, p.parseOne(&ctx, parseNode, rv)
 }

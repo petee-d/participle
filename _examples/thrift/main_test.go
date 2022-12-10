@@ -7,7 +7,6 @@ import (
 
 	require "github.com/alecthomas/assert/v2"
 	thriftparser "github.com/alecthomas/go-thrift/parser"
-	"github.com/alecthomas/participle/v2"
 )
 
 var (
@@ -58,7 +57,7 @@ service Twitter {
 )
 
 func BenchmarkParticipleThrift(b *testing.B) {
-	_, err := parser.ParseString("", source)
+	_, err := parserNativeLexer.ParseString("", source)
 	require.NoError(b, err)
 
 	b.ResetTimer()
@@ -66,19 +65,13 @@ func BenchmarkParticipleThrift(b *testing.B) {
 
 	start := time.Now()
 	for i := 0; i < b.N; i++ {
-		_, _ = parser.ParseString("", source)
+		_, _ = parserNativeLexer.ParseString("", source)
 	}
 	b.ReportMetric(float64(len(source)*b.N)*float64(time.Since(start)/time.Second)/1024/1024, "MiB/s")
 }
 
 func BenchmarkParticipleThriftGenerated(b *testing.B) {
-	parser := participle.MustBuild[Thrift](
-		participle.Lexer(Lexer),
-		participle.Unquote(),
-		participle.Elide("Whitespace"),
-	)
-
-	_, err := parser.ParseString("", source)
+	_, err := parserGeneratedLexer.ParseString("", source)
 	require.NoError(b, err)
 
 	b.ResetTimer()
@@ -86,7 +79,7 @@ func BenchmarkParticipleThriftGenerated(b *testing.B) {
 
 	start := time.Now()
 	for i := 0; i < b.N; i++ {
-		_, _ = parser.ParseString("", source)
+		_, _ = parserGeneratedLexer.ParseString("", source)
 	}
 	b.ReportMetric(float64(len(source)*b.N)*float64(time.Since(start)/time.Second)/1024/1024, "MiB/s")
 }
@@ -103,4 +96,12 @@ func BenchmarkGoThriftParser(b *testing.B) {
 		_, _ = thriftparser.ParseReader("user.thrift", strings.NewReader(source))
 	}
 	b.ReportMetric(float64(len(source)*b.N)*float64(time.Since(start)/time.Second)/1024/1024, "MiB/s")
+}
+
+func TestThriftParser_GeneratedConformance(t *testing.T) {
+	native, err := parserNativeLexer.ParseString("", source)
+	require.NoError(t, err)
+	generated, err := parserGeneratedLexer.ParseString("", source)
+	require.NoError(t, err)
+	require.Equal(t, native, generated)
 }
